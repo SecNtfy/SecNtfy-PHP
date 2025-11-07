@@ -29,7 +29,7 @@ including RSA encryption, critical alerts, sound options, and message priority s
 ### Install via Composer
 
 ```bash
-composer require deinvendor/secntfy-php
+composer require de.sr.secntfy/secntfy-php
 ```
 
 ### Autoloading
