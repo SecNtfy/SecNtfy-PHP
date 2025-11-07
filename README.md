@@ -3,8 +3,8 @@
 [![PHP](https://img.shields.io/badge/PHP-%3E%3D%208.2-blue.svg)](https://www.php.net/releases/8.2/en.php)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**SecNtfy-PHP** is the official PHP port of the original [SecNtfy C# library](https://github.com/DEINUSER/SecNtfy-NuGet).  
-It provides secure, end-to-end encrypted notifications via the [SecNtfy API](https://api.secntfy.app),  
+**SecNtfy-PHP** is the official PHP port of the original [[SecNtfy C# library](https://github.com/DEINUSER/SecNtfy-NuGet)](https://github.com/SecNtfy/SecNtfy-Nuget) (currently Private).  
+It provides secure, end-to-end encrypted notifications via the SecNtfy API,  
 including RSA encryption, critical alerts, sound options, and message priority support.
 
 ---
