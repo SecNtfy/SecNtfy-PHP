@@ -1,0 +1,14 @@
+{
+  "name": "de.sr.secntfy/secntfy-php",
+  "description": "PHP port der SecNtfy C# Library",
+  "type": "library",
+  "license": "MIT",
+  "autoload": {
+    "psr-4": {
+      "SecNtfyPHP\\": "src/"
+    }
+  },
+  "require": {
+    "php": ">=8.2"
+  }
+}
