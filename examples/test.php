@@ -8,7 +8,7 @@ $secNtfy = new SecNtfy(''); // leerer String => Default https://api.secntfy.app
 
 try {
     $res = $secNtfy->sendNotification(
-        'NTFY-DEVICE-PpBTYEw2NPa8mUbYW5orDVGteyCT50FJWdNzSGu5n4npmHY7tRvU83Vv',
+        'NTFY-DEVICE-ABDCKJNLKSLFKJFKE5663GAVJDVES',
         'test',
         'test body',
         false,
