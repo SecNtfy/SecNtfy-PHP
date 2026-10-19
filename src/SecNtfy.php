@@ -5,17 +5,20 @@ namespace SecNtfyPHP;
 final class SecNtfy
 {
     private static ?SecNtfy $instance = null;
-    private static ?string $secNtfyUrl = null;
+    private string $secNtfyUrl;
 
-    /** Nur für Debug-Parität mit C# */
+    /** Base64 ciphertext of the title from the current send attempt. */
     public string $encTitle = '';
 
     public function __construct(?string $secntfyUrl = '')
     {
-        if ($secntfyUrl !== null && strlen($secntfyUrl) === 0) {
-            $secntfyUrl = 'https://api.secntfy.app';
+        $secntfyUrl = $secntfyUrl === null || $secntfyUrl === ''
+            ? 'https://api.secntfy.app'
+            : $secntfyUrl;
+        if (!self::isHttpUrl($secntfyUrl)) {
+            throw new \InvalidArgumentException('The API URL must be an absolute HTTP(S) URL without credentials, query or fragment.');
         }
-        self::$secNtfyUrl = $secntfyUrl;
+        $this->secNtfyUrl = rtrim($secntfyUrl, '/');
         self::$instance = $this;
     }
 
@@ -25,9 +28,12 @@ final class SecNtfy
     }
 
     /**
-     * Sendet eine Notification an SecNtfy.
+     * Sends an encrypted notification to SecNtfy.
      *
-     * @return ResultResponse|null  null wenn kein Public Key verfügbar.
+     * @return ResultResponse|null null when the device key lookup fails.
+     * @throws \InvalidArgumentException for invalid UTF-8 text.
+     * @throws \LengthException when the title or image URL exceeds the RSA limit.
+     * @throws \RuntimeException when the device public key or encryption fails.
      */
     public function sendNotification(
         string $deviceToken,
@@ -37,14 +43,20 @@ final class SecNtfy
         string $imageUrl = '',
         int $priority = 0
     ): ?ResultResponse {
-        if (!str_contains($deviceToken, 'NTFY-DEVICE-')) {
-            return ResultResponse::error("No valid SecNtfy Token! You're token: {$deviceToken}; Is not a valid SecNtfy Token!");
+        $this->encTitle = '';
+        if (!str_starts_with($deviceToken, 'NTFY-DEVICE-')
+            || strlen($deviceToken) === strlen('NTFY-DEVICE-')
+            || preg_match('/[\x00-\x20\x7f]/', $deviceToken) === 1
+        ) {
+            return ResultResponse::error('Invalid SecNtfy device token.', 400);
         }
 
         $msg = $msg ?? '';
-        // APNs Payload-Trim wie im C# (150 Chars + "...")
-        if (mb_strlen($msg) > 150) {
-            $msg = mb_substr($msg, 0, 150) . '...';
+        $title = $title ?? '';
+        foreach ([$title, $msg, $imageUrl] as $text) {
+            if (!mb_check_encoding($text, 'UTF-8')) {
+                throw new \InvalidArgumentException('Notification text must be valid UTF-8.');
+            }
         }
 
         $publicKey = $this->getPubKeyFromDevice($deviceToken);
@@ -52,10 +64,14 @@ final class SecNtfy
             return null;
         }
 
-        // Verschlüsseln (Titel, Body, Bild-URL)
-        $title = (new MsgCrypto($publicKey, $title ?? ''))->encrypt();
+        $maxBytes = (new MsgCrypto($publicKey, ''))->getMaxPlaintextBytes();
+        if (mb_strlen($msg, 'UTF-8') > 150 || strlen($msg) > $maxBytes) {
+            $msg = mb_strcut(mb_substr($msg, 0, 150, 'UTF-8'), 0, $maxBytes - 3, 'UTF-8') . '...';
+        }
+
+        $title = (new MsgCrypto($publicKey, $title))->encrypt();
         $msgEnc = (new MsgCrypto($publicKey, $msg))->encrypt();
-        $imageEnc = (new MsgCrypto($publicKey, $imageUrl ?? ''))->encrypt();
+        $imageEnc = (new MsgCrypto($publicKey, $imageUrl))->encrypt();
         $this->encTitle = $title;
 
         $model = new SecNtfyModel();
@@ -73,7 +89,7 @@ final class SecNtfy
             return ResultResponse::error('JSON encode failed');
         }
 
-        $url = rtrim((string) self::$secNtfyUrl, '/') . '/Message';
+        $url = $this->secNtfyUrl . '/Message';
         [$code, $body] = $this->httpRequest('POST', $url, [
             'Accept: application/json',
             'Content-Type: application/json',
@@ -81,60 +97,93 @@ final class SecNtfy
         ], $json);
 
         if ($code === 0 || $body === null) {
-            return ResultResponse::error('Response is null or empty!');
+            return ResultResponse::error('SecNtfy request failed or timed out.');
         }
 
-        /** @var array<string,mixed>|null $decoded */
         $decoded = json_decode($body, true);
-        $status = is_array($decoded) && isset($decoded['Status']) ? (int)$decoded['Status'] : 0;
-        $message = is_array($decoded) && isset($decoded['Message']) ? (string)$decoded['Message'] : '';
-
-        if ($status === 0) {
-            return ResultResponse::error('Response is null or empty!');
+        if ($code < 200 || $code >= 300) {
+            return ResultResponse::error('SecNtfy returned HTTP ' . $code . '.', $code);
         }
+        if (!is_array($decoded)
+            || !isset($decoded['Status'])
+            || !is_int($decoded['Status'])
+            || $decoded['Status'] < 100
+            || $decoded['Status'] > 599
+            || (isset($decoded['Message']) && !is_string($decoded['Message']))
+        ) {
+            return ResultResponse::error('Invalid JSON response from SecNtfy.');
+        }
+
+        $status = $decoded['Status'];
+        $message = str_replace($deviceToken, '[redacted]', $decoded['Message'] ?? '');
+        if ($status < 200 || $status >= 300) {
+            return ResultResponse::error($message !== '' ? $message : 'SecNtfy rejected the notification.', $status);
+        }
+
         return ResultResponse::ok($message, $status);
     }
 
     /**
-     * Holt den Public Key zu einem Device.
+     * Fetches the Base64 DER public key registered for the device.
      */
     private function getPubKeyFromDevice(string $deviceToken): string
     {
-        $url = rtrim((string) self::$secNtfyUrl, '/') . '/Message/Device';
+        $url = $this->secNtfyUrl . '/Message/Device';
         [$code, $body] = $this->httpRequest('GET', $url, [
             'Accept: application/json',
             "X-NTFYME-DEVICE-KEY: {$deviceToken}",
         ]);
 
-        if ($code === 0 || $body === null) {
+        if ($code !== 200 || $body === null) {
             return '';
         }
 
-        /** @var array<string,mixed>|null $decoded */
         $decoded = json_decode($body, true);
-        if (is_array($decoded) && (($decoded['Status'] ?? 0) === 200)) {
-            return (string)($decoded['Token'] ?? '');
+        if (is_array($decoded)
+            && ($decoded['Status'] ?? 0) === 200
+            && isset($decoded['Token'])
+            && is_string($decoded['Token'])
+        ) {
+            return $decoded['Token'];
         }
         return '';
     }
 
     /**
-     * Prüft, ob URL erreichbar ist (wie in C#, api.* und /api entfernen).
+     * Checks the exact URL for HTTP 200 without sending a device token.
      */
     public static function checkIfUrlReachable(string $url): bool
     {
-        $url = str_replace(['api.', '/api'], ['', ''], $url);
-        [$code, $_] = self::rawHttp('GET', $url, []);
+        if (!self::isHttpUrl($url)) {
+            return false;
+        }
+        [$code] = self::rawHttp('GET', $url, []);
         return $code === 200;
     }
 
-    /** @return array{0:int,1:?string} */
+    private static function isHttpUrl(string $url): bool
+    {
+        $parts = parse_url($url);
+        return filter_var($url, FILTER_VALIDATE_URL) !== false
+            && is_array($parts)
+            && in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)
+            && !isset($parts['user'])
+            && !isset($parts['pass'])
+            && !isset($parts['query'])
+            && !isset($parts['fragment']);
+    }
+
+    /** @param list<string> $headers
+     *  @return array{0:int,1:?string}
+     */
     private function httpRequest(string $method, string $url, array $headers, ?string $body = null): array
     {
         return self::rawHttp($method, $url, $headers, $body);
     }
 
-    /** @return array{0:int,1:?string} */
+    /** @param list<string> $headers
+     *  @return array{0:int,1:?string}
+     */
     private static function rawHttp(string $method, string $url, array $headers, ?string $body = null): array
     {
         $ch = \curl_init($url);
@@ -144,11 +193,14 @@ final class SecNtfy
 
         \curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 5,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_CUSTOMREQUEST => $method,
             CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_TIMEOUT => 20,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
         ]);
 
         if ($body !== null) {
@@ -158,10 +210,8 @@ final class SecNtfy
         $resp = \curl_exec($ch);
         $code = (int) \curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         if ($resp === false) {
-            \curl_close($ch);
             return [0, null];
         }
-        \curl_close($ch);
         return [$code, $resp];
     }
 }
