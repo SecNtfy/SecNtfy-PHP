@@ -6,6 +6,8 @@ final class MsgCrypto
 {
     private string $publicKeyB64;
     private string $msg;
+    private ?\OpenSSLAsymmetricKey $publicKey = null;
+    private int $maxPlaintextBytes = 0;
 
     public function __construct(string $publicKeyB64, string $msg)
     {
@@ -21,33 +23,66 @@ final class MsgCrypto
      */
     public function encrypt(): string
     {
+        $publicKey = $this->getPublicKey();
+        if (strlen($this->msg) > $this->maxPlaintextBytes) {
+            throw new \LengthException("RSA plaintext exceeds {$this->maxPlaintextBytes} bytes");
+        }
+
+        $ok = \openssl_public_encrypt($this->msg, $cipher, $publicKey, \OPENSSL_PKCS1_PADDING);
+        if (!$ok) {
+            throw new \RuntimeException('RSA encryption failed');
+        }
+        return base64_encode($cipher);
+    }
+
+    public function getMaxPlaintextBytes(): int
+    {
+        $this->getPublicKey();
+        return $this->maxPlaintextBytes;
+    }
+
+    private function getPublicKey(): \OpenSSLAsymmetricKey
+    {
+        if ($this->publicKey !== null) {
+            return $this->publicKey;
+        }
+
         $der = base64_decode($this->publicKeyB64, true);
-        if ($der === false) {
+        if ($der === false || $der === '') {
             throw new \RuntimeException('Invalid base64 public key');
         }
 
-        // Heuristik wie im C#: Länge 294 -> meist SPKI; sonst PKCS#1
-        // (am Ende bauen wir in beiden Fällen eine gültige PEM-Hülle)
-        $type = (strlen($der) === 294) ? 'PUBLIC KEY' : 'RSA PUBLIC KEY';
-
-        $pem = $this->derToPem($der, $type);
-
-        $res = \openssl_pkey_get_public($pem);
-        if ($res === false) {
-            // Fallback: wenn SPKI/PKCS1-Erkennung daneben lag, einmal gegentauschen
-            $typeAlt = $type === 'PUBLIC KEY' ? 'RSA PUBLIC KEY' : 'PUBLIC KEY';
-            $pemAlt = $this->derToPem($der, $typeAlt);
-            $res = \openssl_pkey_get_public($pemAlt);
-            if ($res === false) {
-                throw new \RuntimeException('Unable to parse RSA public key');
+        $this->clearOpenSslErrors();
+        $publicKey = false;
+        foreach (['PUBLIC KEY', 'RSA PUBLIC KEY'] as $type) {
+            $publicKey = @\openssl_pkey_get_public($this->derToPem($der, $type));
+            if ($publicKey !== false) {
+                break;
             }
         }
-
-        $ok = \openssl_public_encrypt($this->msg, $cipher, $res, \OPENSSL_PKCS1_PADDING);
-        if (!$ok) {
-            throw new \RuntimeException('RSA encryption failed: '.(\openssl_error_string() ?: 'unknown error'));
+        $this->clearOpenSslErrors();
+        if ($publicKey === false) {
+            throw new \RuntimeException('Unable to parse RSA public key');
         }
-        return base64_encode($cipher);
+
+        $details = \openssl_pkey_get_details($publicKey);
+        if ($details === false || $details['type'] !== \OPENSSL_KEYTYPE_RSA) {
+            throw new \RuntimeException('Public key must be an RSA key');
+        }
+        $maxPlaintextBytes = intdiv($details['bits'] + 7, 8) - 11;
+        if ($maxPlaintextBytes < 0) {
+            throw new \RuntimeException('RSA public key is too small');
+        }
+
+        $this->publicKey = $publicKey;
+        $this->maxPlaintextBytes = $maxPlaintextBytes;
+        return $this->publicKey;
+    }
+
+    private function clearOpenSslErrors(): void
+    {
+        while (\openssl_error_string() !== false) {
+        }
     }
 
     private function derToPem(string $der, string $type): string

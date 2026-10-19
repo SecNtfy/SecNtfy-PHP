@@ -1,20 +1,35 @@
 {
   "name": "de.sr.secntfy/secntfy-php",
-  "description": "PHP port of the SecNtfy C# library",
+  "description": "Send RSA-encrypted notifications through the SecNtfy API",
   "type": "library",
   "license": "MIT",
+  "homepage": "https://github.com/SecNtfy/SecNtfy-PHP",
+  "keywords": ["secntfy", "notifications", "encryption", "rsa"],
+  "support": {
+    "issues": "https://github.com/SecNtfy/SecNtfy-PHP/issues",
+    "source": "https://github.com/SecNtfy/SecNtfy-PHP"
+  },
   "autoload": {
-    "psr-4": { "SecNtfyPHP\\": "src/" }
+    "psr-4": { "SecNtfyPHP\\": "src/" },
+    "classmap": ["src/SecNtfyModel.php"]
+  },
+  "autoload-dev": {
+    "psr-4": { "SecNtfyPHP\\Tests\\": "tests/" }
   },
   "require": {
     "php": ">=8.2",
     "ext-openssl": "*",
-    "ext-curl": "*"
+    "ext-curl": "*",
+    "ext-mbstring": "*"
   },
   "require-dev": {
-    "phpunit/phpunit": "^11.0"
+    "phpunit/phpunit": "^11.5 || ^12.0 || ^13.0"
+  },
+  "scripts": {
+    "test": "phpunit --configuration phpunit.xml",
+    "lint": "@php tools/lint.php"
   },
   "archive": {
-    "exclude": ["/examples", "/tests", "/.github", "/phpunit.xml"]
+    "exclude": ["/examples", "/tests", "/tools", "/.github", "/phpunit.xml"]
   }
 }
